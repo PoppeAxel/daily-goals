@@ -25,7 +25,6 @@ const sb = async (path, options = {}) => {
       "Authorization": `Bearer ${SUPABASE_KEY}`,
       "Content-Type": "application/json",
       "Prefer": options.prefer || "return=representation",
-      ...options.headers,
     },
     ...options,
   });
@@ -38,11 +37,11 @@ const DB = {
   getItems: () => sb("items?select=*"),
   addItem: (item) => sb("items", { method:"POST", body:JSON.stringify(item) }),
   updateItem: (id, item) => sb(`items?id=eq.${id}`, { method:"PATCH", body:JSON.stringify(item) }),
-  deleteItem: (id) => sb(`items?id=eq.${id}`, { method:"DELETE", headers:{ "Prefer":"return=minimal" } }),
+  deleteItem: (id) => sb(`items?id=eq.${id}`, { method:"DELETE", prefer:"return=minimal" }),
   getHistory: () => sb("history?select=*"),
-  upsertHistory: (row) => sb("history", { method:"POST", body:JSON.stringify(row), headers:{ "Prefer":"resolution=merge-duplicates,return=representation" } }),
+  upsertHistory: (row) => sb("history", { method:"POST", body:JSON.stringify(row), prefer:"resolution=merge-duplicates,return=representation" }),
   getStreaks: () => sb("streaks?select=*"),
-  upsertStreak: (row) => sb("streaks", { method:"POST", body:JSON.stringify(row), headers:{ "Prefer":"resolution=merge-duplicates,return=representation" } }),
+  upsertStreak: (row) => sb("streaks", { method:"POST", body:JSON.stringify(row), prefer:"resolution=merge-duplicates,return=representation" }),
 };
 
 // ─── Date helpers ─────────────────────────────────────────────────────────────
