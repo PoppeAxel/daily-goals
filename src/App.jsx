@@ -165,7 +165,6 @@ function ItemModal({ item, onSave, onClose }) {
   const [category, setCategory] = useState(item?.category || "habit");
   const [time, setTime] = useState(item?.time || "");
   const [target, setTarget] = useState(item?.target || "");
-  const [reminderTime, setReminderTime] = useState(item?.reminder_time || "");
   const initDays = item?.repeat_days ? parseRepeatDays(item.repeat_days) : [0,1,2,3,4,5,6];
   const [repeatDays, setRepeatDays] = useState(initDays);
   const [everyday, setEveryday] = useState(!item?.repeat_days);
@@ -175,7 +174,7 @@ function ItemModal({ item, onSave, onClose }) {
     onSave({
       title: title.trim(), category,
       time: time || null, target: target || null,
-      reminder_time: reminderTime || null,
+      reminder_time: time || null,
       repeat_days: everyday ? null : serializeRepeatDays(repeatDays),
     });
     onClose();
@@ -220,17 +219,11 @@ function ItemModal({ item, onSave, onClose }) {
           {!everyday && <WeekdayPicker selected={repeatDays} onChange={setRepeatDays}/>}
         </div>
 
-        <div style={{ display:"flex", gap:10, marginBottom:14 }}>
-          <div style={{ flex:1 }}>
-            <div style={{ fontSize:11, color:C.muted, marginBottom:5, letterSpacing:0.8, textTransform:"uppercase" }}>Time</div>
-            <input value={time} onChange={e => setTime(e.target.value)} type="time"
-              style={{ width:"100%", background:C.cardAlt, border:`1px solid ${C.border}`, borderRadius:10, padding:"11px 12px", color: time ? C.text : C.muted, fontSize:14, fontFamily:"inherit", boxSizing:"border-box", outline:"none" }}/>
-          </div>
-          <div style={{ flex:1 }}>
-            <div style={{ fontSize:11, color:C.muted, marginBottom:5, letterSpacing:0.8, textTransform:"uppercase" }}>Reminder</div>
-            <input value={reminderTime} onChange={e => setReminderTime(e.target.value)} type="time"
-              style={{ width:"100%", background:C.cardAlt, border:`1px solid ${C.border}`, borderRadius:10, padding:"11px 12px", color: reminderTime ? C.text : C.muted, fontSize:14, fontFamily:"inherit", boxSizing:"border-box", outline:"none" }}/>
-          </div>
+        <div style={{ marginBottom:14 }}>
+          <div style={{ fontSize:11, color:C.muted, marginBottom:5, letterSpacing:0.8, textTransform:"uppercase" }}>Time & Reminder</div>
+          <input value={time} onChange={e => setTime(e.target.value)} type="time"
+            style={{ width:"100%", background:C.cardAlt, border:`1px solid ${C.border}`, borderRadius:10, padding:"11px 12px", color: time ? C.text : C.muted, fontSize:14, fontFamily:"inherit", boxSizing:"border-box", outline:"none" }}/>
+          <div style={{ fontSize:11, color:C.muted, marginTop:5 }}>You'll get a notification at this time</div>
         </div>
 
         <input value={target} onChange={e => setTarget(e.target.value)} placeholder="Target or deadline (optional)"
