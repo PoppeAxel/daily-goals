@@ -1,0 +1,20 @@
+{
+  "name": "Daily Goals",
+  "short_name": "Goals",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#0F0F13",
+  "theme_color": "#0F0F13",
+  "icons": [
+    {
+      "src": "https://via.placeholder.com/192x192/0F0F13/C8F45A?text=G",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "https://via.placeholder.com/512x512/0F0F13/C8F45A?text=G",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ]
+}
