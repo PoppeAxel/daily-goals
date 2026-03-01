@@ -507,13 +507,20 @@ export default function App() {
     const load = async () => {
       try {
         const [dbItems, dbHistory, dbStreaks] = await Promise.all([DB.getItems(), DB.getHistory(), DB.getStreaks()]);
-        setItems(dbItems || []);
+        const newItems = dbItems || [];
         const histMap = {};
         (dbHistory || []).forEach(r => { histMap[`${r.date}_${r.item_id}`] = r.done; });
-        setHistory(histMap);
         const streakMap = {};
         (dbStreaks || []).forEach(r => { streakMap[r.item_id] = r.streak; });
+
+        setItems(newItems);
+        setHistory(histMap);
         setStreaks(streakMap);
+
+        // Update local cache with fresh data from Supabase
+        LS.set("dg_items", newItems);
+        LS.set("dg_history", histMap);
+        LS.set("dg_streaks", streakMap);
       } catch (e) {
         console.error("Supabase load failed, using cache", e);
         setItems(LS.get("dg_items") || []);
