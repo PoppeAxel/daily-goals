@@ -10,6 +10,9 @@ const C = {
 const CAT_COLOR = { habit: "#C8F45A", task: "#5C9EFF", goal: "#FF9A3C", schedule: "#C45CFF" };
 const CAT_LABEL = { habit: "Habit", task: "Task", goal: "Goal", schedule: "Scheduled" };
 const WEEKDAYS = ["Mon","Tue","Wed","Thu","Fri","Sat","Sun"];
+// JS getDay(): 0=Sun,1=Mon...6=Sat → map to our 0=Mon..6=Sun index
+const jsDayToIdx = (d = new Date()) => { const day = d.getDay(); return day === 0 ? 6 : day - 1; };
+const todayIdx = jsDayToIdx();
 
 // ─── Supabase ─────────────────────────────────────────────────────────────────
 const SUPABASE_URL = "https://dufxxgxzhsmqqadnhynj.supabase.co";
@@ -26,25 +29,20 @@ const sb = async (path, options = {}) => {
     },
     ...options,
   });
-  if (!res.ok) {
-    const err = await res.text();
-    throw new Error(err);
-  }
+  if (!res.ok) throw new Error(await res.text());
   const text = await res.text();
   return text ? JSON.parse(text) : null;
 };
 
 const DB = {
   getItems: () => sb("items?select=*"),
-  addItem: (item) => sb("items", { method: "POST", body: JSON.stringify(item) }),
-  updateItem: (id, item) => sb(`items?id=eq.${id}`, { method: "PATCH", body: JSON.stringify(item) }),
-  deleteItem: (id) => sb(`items?id=eq.${id}`, { method: "DELETE", prefer: "return=minimal", headers: { "Prefer": "return=minimal" } }),
-
+  addItem: (item) => sb("items", { method:"POST", body:JSON.stringify(item) }),
+  updateItem: (id, item) => sb(`items?id=eq.${id}`, { method:"PATCH", body:JSON.stringify(item) }),
+  deleteItem: (id) => sb(`items?id=eq.${id}`, { method:"DELETE", headers:{ "Prefer":"return=minimal" } }),
   getHistory: () => sb("history?select=*"),
-  upsertHistory: (row) => sb("history", { method: "POST", body: JSON.stringify(row), headers: { "Prefer": "resolution=merge-duplicates,return=representation" } }),
-
+  upsertHistory: (row) => sb("history", { method:"POST", body:JSON.stringify(row), headers:{ "Prefer":"resolution=merge-duplicates,return=representation" } }),
   getStreaks: () => sb("streaks?select=*"),
-  upsertStreak: (row) => sb("streaks", { method: "POST", body: JSON.stringify(row), headers: { "Prefer": "resolution=merge-duplicates,return=representation" } }),
+  upsertStreak: (row) => sb("streaks", { method:"POST", body:JSON.stringify(row), headers:{ "Prefer":"resolution=merge-duplicates,return=representation" } }),
 };
 
 // ─── Date helpers ─────────────────────────────────────────────────────────────
@@ -54,22 +52,43 @@ const weekStart = (d = new Date()) => {
   const day = d.getDay(), diff = (day === 0 ? -6 : 1) - day;
   const s = new Date(d); s.setDate(d.getDate() + diff); s.setHours(0,0,0,0); return s;
 };
-const getDayIdx = (d = new Date()) => { const day = d.getDay(); return day === 0 ? 6 : day - 1; };
 
-// ─── Local cache helpers ──────────────────────────────────────────────────────
+// ─── Local cache ──────────────────────────────────────────────────────────────
 const LS = {
   get: (k) => { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : null; } catch { return null; } },
   set: (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} },
 };
+const SK = { EVENING: "dg_evening_reminder" };
+
+// ─── Repeat days helpers ──────────────────────────────────────────────────────
+// repeat_days stored as comma-separated string e.g. "0,1,2,3,4" = Mon-Fri
+// Empty or null means every day
+const parseRepeatDays = (str) => {
+  if (!str) return null; // every day
+  return str.split(",").map(Number);
+};
+const serializeRepeatDays = (arr) => {
+  if (!arr || arr.length === 0 || arr.length === 7) return null;
+  return arr.join(",");
+};
+const isScheduledToday = (item) => {
+  const days = parseRepeatDays(item.repeat_days);
+  if (!days) return true; // every day
+  return days.includes(todayIdx);
+};
 
 // ─── Notifications ────────────────────────────────────────────────────────────
-const scheduleNotifications = (items) => {
+const scheduleNotifications = (items, eveningTime) => {
   if (!("Notification" in window) || Notification.permission !== "granted") return;
   if (window._notifTimers) window._notifTimers.forEach(clearTimeout);
   window._notifTimers = [];
+
   const now = new Date();
-  items.forEach(item => {
-    const t = item.reminderTime || item.time;
+  const todayItems = items.filter(isScheduledToday);
+
+  // Per-goal reminders
+  todayItems.forEach(item => {
+    const t = item.reminder_time || item.time;
     if (!t) return;
     const [h, m] = t.split(":").map(Number);
     const fire = new Date(); fire.setHours(h, m, 0, 0);
@@ -79,6 +98,21 @@ const scheduleNotifications = (items) => {
       new Notification("⏰ Daily Goals", { body: `Time for: ${item.title}` });
     }, ms));
   });
+
+  // Global evening reminder for unfinished goals
+  if (eveningTime) {
+    const [h, m] = eveningTime.split(":").map(Number);
+    const fire = new Date(); fire.setHours(h, m, 0, 0);
+    const ms = fire - now;
+    if (ms > 0) {
+      window._notifTimers.push(setTimeout(() => {
+        // We don't know done state at schedule time, so always fire
+        new Notification("🌙 Evening Check-in", {
+          body: "Don't forget to complete your daily goals before bed!",
+        });
+      }, ms));
+    }
+  }
 };
 
 const requestNotifPermission = async () => {
@@ -94,13 +128,35 @@ function Icon({ name, size = 20, color = C.text }) {
     plus: <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M12 4v16m8-8H4"/>,
     home: <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 9l9-7 9 7v11a2 2 0 01-2 2H5a2 2 0 01-2-2z"/>,
     calendar: <><rect x="3" y="4" width="18" height="18" rx="2" strokeWidth={1.5}/><line x1="16" y1="2" x2="16" y2="6" strokeWidth={2} strokeLinecap="round"/><line x1="8" y1="2" x2="8" y2="6" strokeWidth={2} strokeLinecap="round"/><line x1="3" y1="10" x2="21" y2="10" strokeWidth={1.5}/></>,
+    settings: <><circle cx="12" cy="12" r="3" strokeWidth={2}/><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 010 2.83 2 2 0 01-2.83 0l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z"/></>,
     x: <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M6 18L18 6M6 6l12 12"/>,
     clock: <><circle cx="12" cy="12" r="10" strokeWidth={1.5}/><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6l4 2"/></>,
     target: <><circle cx="12" cy="12" r="10" strokeWidth={1.5}/><circle cx="12" cy="12" r="6" strokeWidth={1.5}/><circle cx="12" cy="12" r="2" strokeWidth={2}/></>,
     bell: <><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"/></>,
     cloud: <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M3 15a4 4 0 004 4h9a5 5 0 10-.1-9.999 5.002 5.002 0 10-9.78 2.096A4.001 4.001 0 003 15z"/>,
+    repeat: <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M17 1l4 4-4 4M3 11V9a4 4 0 014-4h14M7 23l-4-4 4-4M21 13v2a4 4 0 01-4 4H3"/>,
   };
   return <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color}>{p[name]}</svg>;
+}
+
+// ─── Weekday Picker ───────────────────────────────────────────────────────────
+function WeekdayPicker({ selected, onChange }) {
+  const toggle = (i) => {
+    const next = selected.includes(i) ? selected.filter(d => d !== i) : [...selected, i];
+    onChange(next.sort((a,b) => a-b));
+  };
+  return (
+    <div style={{ display:"flex", gap:6 }}>
+      {WEEKDAYS.map((day, i) => (
+        <button key={day} onClick={() => toggle(i)} style={{
+          flex:1, padding:"8px 0", borderRadius:8, fontSize:11, fontWeight:600, fontFamily:"inherit", cursor:"pointer",
+          background: selected.includes(i) ? C.accent+"22" : C.cardAlt,
+          border: `1.5px solid ${selected.includes(i) ? C.accent : C.border}`,
+          color: selected.includes(i) ? C.accent : C.muted,
+        }}>{day}</button>
+      ))}
+    </div>
+  );
 }
 
 // ─── Add / Edit Modal ─────────────────────────────────────────────────────────
@@ -110,26 +166,36 @@ function ItemModal({ item, onSave, onClose }) {
   const [category, setCategory] = useState(item?.category || "habit");
   const [time, setTime] = useState(item?.time || "");
   const [target, setTarget] = useState(item?.target || "");
-  const [reminderTime, setReminderTime] = useState(item?.reminderTime || "");
+  const [reminderTime, setReminderTime] = useState(item?.reminder_time || "");
+  const initDays = item?.repeat_days ? parseRepeatDays(item.repeat_days) : [0,1,2,3,4,5,6];
+  const [repeatDays, setRepeatDays] = useState(initDays);
+  const [everyday, setEveryday] = useState(!item?.repeat_days);
 
   const handleSave = () => {
     if (!title.trim()) return;
-    onSave({ title: title.trim(), category, time: time || null, target: target || null, reminderTime: reminderTime || null });
+    onSave({
+      title: title.trim(), category,
+      time: time || null, target: target || null,
+      reminder_time: reminderTime || null,
+      repeat_days: everyday ? null : serializeRepeatDays(repeatDays),
+    });
     onClose();
   };
 
   return (
     <div onClick={e => e.target === e.currentTarget && onClose()}
       style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.75)", display:"flex", alignItems:"flex-end", zIndex:100 }}>
-      <div style={{ background:C.card, borderRadius:"24px 24px 0 0", padding:"28px 24px 44px", width:"100%", boxSizing:"border-box" }}>
+      <div style={{ background:C.card, borderRadius:"24px 24px 0 0", padding:"28px 24px 44px", width:"100%", boxSizing:"border-box", maxHeight:"90vh", overflowY:"auto" }}>
         <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:22 }}>
           <span style={{ fontFamily:"'DM Serif Display',Georgia,serif", fontSize:22, color:C.text }}>{isEdit ? "Edit Goal" : "New Goal"}</span>
           <button onClick={onClose} style={{ background:C.cardAlt, border:"none", borderRadius:"50%", width:36, height:36, display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer" }}>
             <Icon name="x" size={18} color={C.muted}/>
           </button>
         </div>
+
         <input value={title} onChange={e => setTitle(e.target.value)} placeholder="What's your goal?"
           style={{ width:"100%", background:C.cardAlt, border:`1px solid ${C.border}`, borderRadius:12, padding:"14px 16px", color:C.text, fontSize:16, fontFamily:"inherit", boxSizing:"border-box", outline:"none", marginBottom:14 }} autoFocus/>
+
         <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:9, marginBottom:14 }}>
           {Object.entries(CAT_LABEL).map(([key, label]) => (
             <button key={key} onClick={() => setCategory(key)} style={{
@@ -140,6 +206,21 @@ function ItemModal({ item, onSave, onClose }) {
             }}>{label}</button>
           ))}
         </div>
+
+        {/* Repeat schedule */}
+        <div style={{ marginBottom:14 }}>
+          <div style={{ fontSize:11, color:C.muted, marginBottom:8, letterSpacing:0.8, textTransform:"uppercase", display:"flex", justifyContent:"space-between", alignItems:"center" }}>
+            <span>Repeat</span>
+            <button onClick={() => { setEveryday(!everyday); if (!everyday) setRepeatDays([0,1,2,3,4,5,6]); }} style={{
+              background: everyday ? C.accent+"22" : C.cardAlt,
+              border: `1.5px solid ${everyday ? C.accent : C.border}`,
+              borderRadius:20, padding:"3px 10px", color: everyday ? C.accent : C.muted,
+              fontSize:11, fontFamily:"inherit", cursor:"pointer", fontWeight:600,
+            }}>Every day</button>
+          </div>
+          {!everyday && <WeekdayPicker selected={repeatDays} onChange={setRepeatDays}/>}
+        </div>
+
         <div style={{ display:"flex", gap:10, marginBottom:14 }}>
           <div style={{ flex:1 }}>
             <div style={{ fontSize:11, color:C.muted, marginBottom:5, letterSpacing:0.8, textTransform:"uppercase" }}>Time</div>
@@ -152,10 +233,48 @@ function ItemModal({ item, onSave, onClose }) {
               style={{ width:"100%", background:C.cardAlt, border:`1px solid ${C.border}`, borderRadius:10, padding:"11px 12px", color: reminderTime ? C.text : C.muted, fontSize:14, fontFamily:"inherit", boxSizing:"border-box", outline:"none" }}/>
           </div>
         </div>
+
         <input value={target} onChange={e => setTarget(e.target.value)} placeholder="Target or deadline (optional)"
           style={{ width:"100%", background:C.cardAlt, border:`1px solid ${C.border}`, borderRadius:10, padding:"12px 14px", color:C.text, fontSize:14, fontFamily:"inherit", boxSizing:"border-box", outline:"none", marginBottom:18 }}/>
+
         <button onClick={handleSave} style={{ width:"100%", background:C.accent, border:"none", borderRadius:14, padding:"16px", color:"#0F0F13", fontSize:16, fontWeight:700, fontFamily:"inherit", cursor:"pointer" }}>
           {isEdit ? "Save Changes" : "Add Goal"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ─── Settings Modal ───────────────────────────────────────────────────────────
+function SettingsModal({ eveningTime, onSave, onClose }) {
+  const [time, setTime] = useState(eveningTime || "21:00");
+  return (
+    <div onClick={e => e.target === e.currentTarget && onClose()}
+      style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.75)", display:"flex", alignItems:"flex-end", zIndex:100 }}>
+      <div style={{ background:C.card, borderRadius:"24px 24px 0 0", padding:"28px 24px 44px", width:"100%", boxSizing:"border-box" }}>
+        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:24 }}>
+          <span style={{ fontFamily:"'DM Serif Display',Georgia,serif", fontSize:22, color:C.text }}>Settings</span>
+          <button onClick={onClose} style={{ background:C.cardAlt, border:"none", borderRadius:"50%", width:36, height:36, display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer" }}>
+            <Icon name="x" size={18} color={C.muted}/>
+          </button>
+        </div>
+
+        <div style={{ background:C.cardAlt, borderRadius:16, padding:18, marginBottom:20 }}>
+          <div style={{ display:"flex", alignItems:"center", gap:10, marginBottom:14 }}>
+            <Icon name="bell" size={18} color={C.purple}/>
+            <span style={{ fontSize:15, fontWeight:600, color:C.text }}>Evening Reminder</span>
+          </div>
+          <div style={{ fontSize:13, color:C.muted, marginBottom:12 }}>
+            Get a notification each evening to check on unfinished goals.
+          </div>
+          <div style={{ fontSize:11, color:C.muted, marginBottom:6, letterSpacing:0.8, textTransform:"uppercase" }}>Reminder time</div>
+          <input value={time} onChange={e => setTime(e.target.value)} type="time"
+            style={{ width:"100%", background:C.card, border:`1px solid ${C.border}`, borderRadius:10, padding:"12px 14px", color:C.text, fontSize:15, fontFamily:"inherit", boxSizing:"border-box", outline:"none" }}/>
+        </div>
+
+        <button onClick={() => { onSave(time); onClose(); }}
+          style={{ width:"100%", background:C.accent, border:"none", borderRadius:14, padding:"16px", color:"#0F0F13", fontSize:16, fontWeight:700, fontFamily:"inherit", cursor:"pointer" }}>
+          Save Settings
         </button>
       </div>
     </div>
@@ -166,6 +285,9 @@ function ItemModal({ item, onSave, onClose }) {
 function GoalCard({ item, done, streak, weekHist, onToggle, onEdit, onDelete }) {
   const color = CAT_COLOR[item.category];
   const [showActions, setShowActions] = useState(false);
+  const days = parseRepeatDays(item.repeat_days);
+  const repeatLabel = !days ? "Every day" : days.map(i => WEEKDAYS[i]).join(", ");
+
   return (
     <div style={{ background: done ? C.cardAlt : C.card, border:`1px solid ${done ? C.border : color+"33"}`, borderRadius:18, padding:"14px 16px", marginBottom:10, opacity: done ? 0.7 : 1, transition:"all 0.2s" }}>
       <div style={{ display:"flex", alignItems:"flex-start", gap:12 }}>
@@ -174,6 +296,7 @@ function GoalCard({ item, done, streak, weekHist, onToggle, onEdit, onDelete }) 
           border:`2px solid ${done ? color : C.border}`, background: done ? color : "transparent",
           cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", marginTop:3,
         }}>{done && <Icon name="check" size={14} color="#0F0F13"/>}</button>
+
         <div style={{ flex:1, minWidth:0 }}>
           <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", gap:8 }}>
             <span style={{ fontSize:15, fontWeight:500, color: done ? C.muted : C.text, textDecoration: done ? "line-through" : "none", fontFamily:"'DM Serif Display',Georgia,serif", lineHeight:1.3 }}>
@@ -186,19 +309,29 @@ function GoalCard({ item, done, streak, weekHist, onToggle, onEdit, onDelete }) 
               <button onClick={() => setShowActions(!showActions)} style={{ background:"none", border:"none", cursor:"pointer", color:C.muted, padding:"0 3px", fontSize:18, lineHeight:1 }}>⋯</button>
             </div>
           </div>
-          <div style={{ display:"flex", gap:12, marginTop:6, flexWrap:"wrap" }}>
+
+          <div style={{ display:"flex", gap:10, marginTop:6, flexWrap:"wrap" }}>
             {item.time && <span style={{ display:"flex", alignItems:"center", gap:4, fontSize:12, color:C.muted }}><Icon name="clock" size={11} color={C.muted}/>{item.time}</span>}
-            {streak > 0 && <span style={{ fontSize:12, color:C.orange }}>🔥 {streak}d streak</span>}
+            {streak > 0 && <span style={{ fontSize:12, color:C.orange }}>🔥 {streak}d</span>}
             {item.target && <span style={{ display:"flex", alignItems:"center", gap:4, fontSize:12, color:C.muted }}><Icon name="target" size={11} color={C.muted}/>{item.target}</span>}
-            {item.reminderTime && <span style={{ display:"flex", alignItems:"center", gap:4, fontSize:12, color:C.purple }}><Icon name="bell" size={11} color={C.purple}/>{item.reminderTime}</span>}
+            <span style={{ display:"flex", alignItems:"center", gap:4, fontSize:12, color:C.muted }}>
+              <Icon name="repeat" size={11} color={C.muted}/>{repeatLabel}
+            </span>
           </div>
+
           {weekHist && (
             <div style={{ display:"flex", gap:3, marginTop:10 }}>
               {WEEKDAYS.map((day, i) => {
-                const isToday = i === getDayIdx();
+                const isToday = i === todayIdx;
+                const scheduled = !days || days.includes(i);
                 return (
                   <div key={day} style={{ textAlign:"center" }}>
-                    <div style={{ width:24, height:24, borderRadius:6, background: isToday ? color : weekHist[i] ? color+"55" : C.border, border: isToday ? `2px solid ${color}` : "none", marginBottom:2 }}/>
+                    <div style={{
+                      width:24, height:24, borderRadius:6, marginBottom:2,
+                      background: !scheduled ? "transparent" : isToday ? color : weekHist[i] ? color+"55" : C.border,
+                      border: isToday && scheduled ? `2px solid ${color}` : scheduled ? "none" : `1px dashed ${C.border}`,
+                      opacity: scheduled ? 1 : 0.3,
+                    }}/>
                     <span style={{ fontSize:8, color: isToday ? color : C.muted }}>{day}</span>
                   </div>
                 );
@@ -207,6 +340,7 @@ function GoalCard({ item, done, streak, weekHist, onToggle, onEdit, onDelete }) 
           )}
         </div>
       </div>
+
       {showActions && (
         <div style={{ display:"flex", gap:8, marginTop:12, paddingTop:12, borderTop:`1px solid ${C.border}` }}>
           <button onClick={() => { onEdit(item); setShowActions(false); }}
@@ -246,10 +380,9 @@ function HistoryView({ items, history, streaks }) {
 
   const days = getDays();
   const getCompletion = (dk) => {
-    const itemsForDay = Object.entries(history).filter(([key]) => key.startsWith(dk + "_"));
-    if (!itemsForDay.length) return null;
-    const done = itemsForDay.filter(([,v]) => v).length;
-    return done / itemsForDay.length;
+    const entries = Object.entries(history).filter(([k]) => k.startsWith(dk + "_"));
+    if (!entries.length) return null;
+    return entries.filter(([,v]) => v).length / entries.length;
   };
 
   const allEntries = Object.entries(history);
@@ -273,6 +406,7 @@ function HistoryView({ items, history, streaks }) {
           }}>{label}</button>
         ))}
       </div>
+
       <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10, marginBottom:16 }}>
         {[
           { val:`${allTotal ? Math.round((allDone/allTotal)*100) : 0}%`, label:"All-time rate", color:C.accent },
@@ -286,6 +420,7 @@ function HistoryView({ items, history, streaks }) {
           </div>
         ))}
       </div>
+
       {period !== "year" ? (
         <div style={{ background:C.card, borderRadius:20, padding:20, marginBottom:16 }}>
           <div style={{ fontSize:11, color:C.muted, letterSpacing:1, textTransform:"uppercase", marginBottom:14 }}>Completion per day</div>
@@ -295,7 +430,7 @@ function HistoryView({ items, history, streaks }) {
               const isToday = dk === todayK;
               const h = Math.max(4, pct * 90);
               const d = new Date(dk + "T12:00:00");
-              const lbl = period === "week" ? WEEKDAYS[getDayIdx(d)] : d.getDate();
+              const lbl = period === "week" ? WEEKDAYS[jsDayToIdx(d)] : d.getDate();
               return (
                 <div key={dk} style={{ flex:1, display:"flex", flexDirection:"column", alignItems:"center", gap:4, minWidth:0 }}>
                   <div style={{ width:"100%", height:90, display:"flex", alignItems:"flex-end" }}>
@@ -325,6 +460,7 @@ function HistoryView({ items, history, streaks }) {
           </div>
         </div>
       )}
+
       <div style={{ background:C.card, borderRadius:20, padding:20, marginBottom:16 }}>
         <div style={{ fontSize:11, color:C.muted, letterSpacing:1, textTransform:"uppercase", marginBottom:14 }}>Goal streaks</div>
         {items.map(item => {
@@ -351,81 +487,64 @@ function HistoryView({ items, history, streaks }) {
 // ─── Main App ─────────────────────────────────────────────────────────────────
 export default function App() {
   const [items, setItems] = useState([]);
-  const [history, setHistory] = useState({}); // { "date_itemId": bool }
-  const [streaks, setStreaks] = useState({});  // { itemId: number }
+  const [history, setHistory] = useState({});
+  const [streaks, setStreaks] = useState({});
   const [loading, setLoading] = useState(true);
   const [syncing, setSyncing] = useState(false);
   const [tab, setTab] = useState("today");
   const [filter, setFilter] = useState("all");
   const [showAdd, setShowAdd] = useState(false);
   const [editItem, setEditItem] = useState(null);
+  const [showSettings, setShowSettings] = useState(false);
+  const [eveningTime, setEveningTime] = useState(() => LS.get(SK.EVENING) || "21:00");
   const [notifPermission, setNotifPermission] = useState(() => "Notification" in window ? Notification.permission : "unsupported");
   const [showNotifBanner, setShowNotifBanner] = useState(false);
 
   const today = todayKey();
   const todayDisplay = new Date().toLocaleDateString("en-US", { weekday:"long", month:"long", day:"numeric" });
 
-  // ── Load from Supabase on mount ──
   useEffect(() => {
     const load = async () => {
       try {
-        const [dbItems, dbHistory, dbStreaks] = await Promise.all([
-          DB.getItems(), DB.getHistory(), DB.getStreaks()
-        ]);
-
+        const [dbItems, dbHistory, dbStreaks] = await Promise.all([DB.getItems(), DB.getHistory(), DB.getStreaks()]);
         setItems(dbItems || []);
-
-        // Convert history rows to flat map: "date_itemId" -> bool
         const histMap = {};
-        (dbHistory || []).forEach(row => {
-          histMap[`${row.date}_${row.item_id}`] = row.done;
-        });
+        (dbHistory || []).forEach(r => { histMap[`${r.date}_${r.item_id}`] = r.done; });
         setHistory(histMap);
-
-        // Convert streaks rows to map: itemId -> streak
         const streakMap = {};
-        (dbStreaks || []).forEach(row => {
-          streakMap[row.item_id] = row.streak;
-        });
+        (dbStreaks || []).forEach(r => { streakMap[r.item_id] = r.streak; });
         setStreaks(streakMap);
-
-        // Cache locally as fallback
-        LS.set("dg_items", dbItems);
-        LS.set("dg_history", histMap);
-        LS.set("dg_streaks", streakMap);
       } catch (e) {
-        console.error("Failed to load from Supabase, using local cache", e);
+        console.error("Supabase load failed, using cache", e);
         setItems(LS.get("dg_items") || []);
         setHistory(LS.get("dg_history") || {});
         setStreaks(LS.get("dg_streaks") || {});
-      } finally {
-        setLoading(false);
-      }
+      } finally { setLoading(false); }
     };
     load();
   }, []);
 
-  // ── Notification setup ──
-  useEffect(() => {
-    if (notifPermission === "default") setShowNotifBanner(true);
-  }, []);
-
-  useEffect(() => {
-    if (notifPermission === "granted") scheduleNotifications(items);
-  }, [items, notifPermission]);
+  useEffect(() => { if (notifPermission === "default") setShowNotifBanner(true); }, []);
+  useEffect(() => { if (notifPermission === "granted") scheduleNotifications(items, eveningTime); }, [items, notifPermission, eveningTime]);
 
   const handleEnableNotifs = async () => {
     const result = await requestNotifPermission();
     setNotifPermission(result);
     setShowNotifBanner(false);
-    if (result === "granted") scheduleNotifications(items);
+    if (result === "granted") scheduleNotifications(items, eveningTime);
   };
 
-  // ── Today helpers ──
-  const isDone = id => !!history[`${today}_${id}`];
-  const doneCount = items.filter(i => isDone(i.id)).length;
+  const saveEveningTime = (t) => {
+    setEveningTime(t);
+    LS.set(SK.EVENING, t);
+    if (notifPermission === "granted") scheduleNotifications(items, t);
+  };
 
-  // ── Toggle completion ──
+  // Only show items scheduled for today
+  const todayItems = items.filter(isScheduledToday);
+  const isDone = id => !!history[`${today}_${id}`];
+  const doneCount = todayItems.filter(i => isDone(i.id)).length;
+
   const toggle = useCallback(async (id) => {
     const newDone = !isDone(id);
     const key = `${today}_${id}`;
@@ -433,53 +552,45 @@ export default function App() {
     setSyncing(true);
     try {
       await DB.upsertHistory({ item_id: id, date: today, done: newDone });
-      // Recalculate streak
-      const newStreak = await calcStreak(id, newDone);
-      setStreaks(prev => ({ ...prev, [id]: newStreak }));
-      await DB.upsertStreak({ item_id: id, streak: newStreak });
-    } catch (e) { console.error(e); }
+      let streak = 0;
+      if (newDone) {
+        streak = 1;
+        let d = new Date(); d.setDate(d.getDate()-1);
+        for (let i = 0; i < 365; i++) {
+          if (history[`${dateKey(d)}_${id}`]) { streak++; d.setDate(d.getDate()-1); }
+          else break;
+        }
+      }
+      setStreaks(prev => ({ ...prev, [id]: streak }));
+      await DB.upsertStreak({ item_id: id, streak });
+    } catch(e) { console.error(e); }
     finally { setSyncing(false); }
   }, [history, today]);
 
-  const calcStreak = async (id, todayDone) => {
-    if (!todayDone) return 0;
-    let streak = 1;
-    let d = new Date(); d.setDate(d.getDate()-1);
-    for (let i = 0; i < 365; i++) {
-      const k = `${dateKey(d)}_${id}`;
-      if (history[k]) { streak++; d.setDate(d.getDate()-1); }
-      else break;
-    }
-    return streak;
-  };
-
-  // ── Add item ──
-  const addItem = async ({ title, category, time, target, reminderTime }) => {
-    const newItem = { id: String(Date.now()), title, category, time, target, reminder_time: reminderTime };
-    setItems(prev => [...prev, { ...newItem, reminderTime }]);
+  const addItem = async (data) => {
+    const newItem = { id: String(Date.now()), ...data };
+    setItems(prev => [...prev, newItem]);
     setSyncing(true);
     try { await DB.addItem(newItem); }
-    catch (e) { console.error(e); }
+    catch(e) { console.error(e); }
     finally { setSyncing(false); }
   };
 
-  // ── Update item ──
-  const updateItem = async (updated) => {
-    const merged = { ...editItem, ...updated };
+  const updateItem = async (data) => {
+    const merged = { ...editItem, ...data };
     setItems(prev => prev.map(i => i.id === editItem.id ? merged : i));
     setEditItem(null);
     setSyncing(true);
-    try { await DB.updateItem(editItem.id, { title: merged.title, category: merged.category, time: merged.time, target: merged.target, reminder_time: merged.reminderTime }); }
-    catch (e) { console.error(e); }
+    try { await DB.updateItem(editItem.id, data); }
+    catch(e) { console.error(e); }
     finally { setSyncing(false); }
   };
 
-  // ── Delete item ──
   const deleteItem = async (id) => {
     setItems(prev => prev.filter(i => i.id !== id));
     setSyncing(true);
     try { await DB.deleteItem(id); }
-    catch (e) { console.error(e); }
+    catch(e) { console.error(e); }
     finally { setSyncing(false); }
   };
 
@@ -491,7 +602,7 @@ export default function App() {
     });
   };
 
-  const filtered = filter === "all" ? items : items.filter(i => i.category === filter);
+  const filtered = filter === "all" ? todayItems : todayItems.filter(i => i.category === filter);
   const sorted = [...filtered].sort((a, b) => {
     if (a.time && b.time) return a.time.localeCompare(b.time);
     if (a.time) return -1; if (b.time) return 1; return 0;
@@ -534,17 +645,22 @@ export default function App() {
 
       {/* Header */}
       <div style={{ padding: showNotifBanner ? "16px 24px 16px" : "52px 24px 16px" }}>
-        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start" }}>
-          <div style={{ fontSize:11, color:C.muted, letterSpacing:1.2, textTransform:"uppercase", marginBottom:6 }}>{todayDisplay}</div>
-          {syncing && <div style={{ display:"flex", alignItems:"center", gap:5, fontSize:11, color:C.muted }}><Icon name="cloud" size={14} color={C.muted}/>Saving...</div>}
+        <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:6 }}>
+          <div style={{ fontSize:11, color:C.muted, letterSpacing:1.2, textTransform:"uppercase" }}>{todayDisplay}</div>
+          <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+            {syncing && <div style={{ display:"flex", alignItems:"center", gap:4, fontSize:11, color:C.muted }}><Icon name="cloud" size={13} color={C.muted}/>Saving</div>}
+            <button onClick={() => setShowSettings(true)} style={{ background:"none", border:"none", cursor:"pointer", padding:2 }}>
+              <Icon name="settings" size={20} color={C.muted}/>
+            </button>
+          </div>
         </div>
         <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
           <div>
             <h1 style={{ fontFamily:"'DM Serif Display',Georgia,serif", fontSize:34, margin:0, color:C.text, lineHeight:1 }}>
-              {items.length > 0 && doneCount === items.length ? "All done! 🎉" : `${doneCount} / ${items.length}`}
+              {todayItems.length > 0 && doneCount === todayItems.length ? "All done! 🎉" : `${doneCount} / ${todayItems.length}`}
             </h1>
             <div style={{ fontSize:13, color:C.muted, marginTop:5 }}>
-              {items.length > 0 && doneCount === items.length ? "You crushed it today" : `${items.length - doneCount} remaining`}
+              {todayItems.length > 0 && doneCount === todayItems.length ? "You crushed it today" : `${todayItems.length - doneCount} remaining today`}
             </div>
           </div>
           <button onClick={() => setShowAdd(true)} style={{ width:50, height:50, background:C.accent, border:"none", borderRadius:"50%", display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer", boxShadow:`0 0 28px ${C.accent}44` }}>
@@ -552,12 +668,12 @@ export default function App() {
           </button>
         </div>
         <div style={{ background:C.border, borderRadius:4, height:4, marginTop:16, overflow:"hidden" }}>
-          <div style={{ background:`linear-gradient(90deg,${C.accent},${C.accentDim})`, height:"100%", width:`${items.length ? (doneCount/items.length)*100 : 0}%`, borderRadius:4, transition:"width 0.4s ease" }}/>
+          <div style={{ background:`linear-gradient(90deg,${C.accent},${C.accentDim})`, height:"100%", width:`${todayItems.length ? (doneCount/todayItems.length)*100 : 0}%`, borderRadius:4, transition:"width 0.4s ease" }}/>
         </div>
       </div>
 
       {/* Tabs */}
-      <div style={{ display:"flex", gap:8, padding:"12px 20px 16px", overflowX:"auto" }}>
+      <div style={{ display:"flex", gap:8, padding:"12px 20px 16px" }}>
         {[["today","Today"],["history","History"]].map(([key,label]) => (
           <button key={key} onClick={() => setTab(key)} style={{
             background: tab===key ? C.accent : C.card, color: tab===key ? "#0F0F13" : C.muted,
@@ -581,7 +697,7 @@ export default function App() {
           <div style={{ padding:"0 20px" }}>
             {sorted.length === 0
               ? <div style={{ textAlign:"center", color:C.muted, padding:"48px 0", fontSize:15 }}>
-                  No goals yet<br/><span style={{fontSize:12, marginTop:6, display:"block"}}>Tap + to add your first goal</span>
+                  No goals for today<br/><span style={{fontSize:12, marginTop:6, display:"block"}}>Tap + to add a goal</span>
                 </div>
               : sorted.map(item => (
                   <GoalCard key={item.id} item={item} done={isDone(item.id)}
@@ -607,6 +723,7 @@ export default function App() {
 
       {showAdd && <ItemModal onSave={addItem} onClose={() => setShowAdd(false)}/>}
       {editItem && <ItemModal item={editItem} onSave={updateItem} onClose={() => setEditItem(null)}/>}
+      {showSettings && <SettingsModal eveningTime={eveningTime} onSave={saveEveningTime} onClose={() => setShowSettings(false)}/>}
     </div>
   );
 }
