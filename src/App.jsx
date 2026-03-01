@@ -27,6 +27,45 @@ const LS = {
 };
 const SK = { ITEMS: "dg_items", HISTORY: "dg_history", STREAKS: "dg_streaks" };
 
+// ─── Notifications ────────────────────────────────────────────────────────────
+const scheduleNotifications = async (items) => {
+  if (!("Notification" in window)) return;
+  if (Notification.permission !== "granted") return;
+
+  // Clear previously scheduled timeouts (stored in window)
+  if (window._notifTimers) window._notifTimers.forEach(clearTimeout);
+  window._notifTimers = [];
+
+  const now = new Date();
+  items.forEach(item => {
+    const reminderTime = item.reminderTime || item.time;
+    if (!reminderTime) return;
+    const [h, m] = reminderTime.split(":").map(Number);
+    const fire = new Date();
+    fire.setHours(h, m, 0, 0);
+    const ms = fire - now;
+    if (ms <= 0) return; // already passed today
+    const timer = setTimeout(() => {
+      if (Notification.permission === "granted") {
+        new Notification("⏰ Daily Goals", {
+          body: `Time for: ${item.title}`,
+          icon: "/manifest-icon.png",
+          badge: "/manifest-icon.png",
+        });
+      }
+    }, ms);
+    window._notifTimers.push(timer);
+  });
+};
+
+const requestNotificationPermission = async () => {
+  if (!("Notification" in window)) return "unsupported";
+  if (Notification.permission === "granted") return "granted";
+  if (Notification.permission === "denied") return "denied";
+  const result = await Notification.requestPermission();
+  return result;
+};
+
 const DEFAULT_ITEMS = [
   { id: "1", title: "Morning run", category: "habit", time: "07:00", target: null, reminderTime: null },
   { id: "2", title: "Drink 2L water", category: "habit", time: null, target: null, reminderTime: null },
@@ -323,6 +362,8 @@ export default function App() {
   const [filter, setFilter] = useState("all");
   const [showAdd, setShowAdd] = useState(false);
   const [editItem, setEditItem] = useState(null);
+  const [notifPermission, setNotifPermission] = useState(() => "Notification" in window ? Notification.permission : "unsupported");
+  const [showNotifBanner, setShowNotifBanner] = useState(false);
 
   const today = todayKey();
   const todayDisplay = new Date().toLocaleDateString("en-US", { weekday:"long", month:"long", day:"numeric" });
@@ -330,6 +371,23 @@ export default function App() {
   useEffect(() => { LS.set(SK.ITEMS, items); }, [items]);
   useEffect(() => { LS.set(SK.HISTORY, history); }, [history]);
   useEffect(() => { LS.set(SK.STREAKS, streaks); }, [streaks]);
+
+  // Ask for notification permission on first load
+  useEffect(() => {
+    if (notifPermission === "default") setShowNotifBanner(true);
+  }, []);
+
+  // Schedule notifications whenever items change
+  useEffect(() => {
+    if (notifPermission === "granted") scheduleNotifications(items);
+  }, [items, notifPermission]);
+
+  const handleEnableNotifs = async () => {
+    const result = await requestNotificationPermission();
+    setNotifPermission(result);
+    setShowNotifBanner(false);
+    if (result === "granted") scheduleNotifications(items);
+  };
 
   const todayHistory = history[today] || {};
   const isDone = id => !!todayHistory[id];
@@ -391,8 +449,23 @@ export default function App() {
         button:active { transform:scale(0.95); }
       `}</style>
 
+      {/* Notification banner */}
+      {showNotifBanner && (
+        <div style={{ margin:"52px 20px 0", background:`${C.accent}18`, border:`1px solid ${C.accent}44`, borderRadius:16, padding:"14px 16px", display:"flex", alignItems:"center", gap:12 }}>
+          <Icon name="bell" size={20} color={C.accent}/>
+          <div style={{ flex:1 }}>
+            <div style={{ fontSize:14, fontWeight:600, color:C.accent }}>Enable Reminders</div>
+            <div style={{ fontSize:12, color:C.muted, marginTop:2 }}>Get notified when it's time for your goals</div>
+          </div>
+          <div style={{ display:"flex", gap:8 }}>
+            <button onClick={() => setShowNotifBanner(false)} style={{ background:"none", border:"none", color:C.muted, fontSize:13, fontFamily:"inherit", cursor:"pointer" }}>Later</button>
+            <button onClick={handleEnableNotifs} style={{ background:C.accent, border:"none", borderRadius:20, padding:"6px 14px", color:"#0F0F13", fontSize:13, fontWeight:700, fontFamily:"inherit", cursor:"pointer" }}>Allow</button>
+          </div>
+        </div>
+      )}
+
       {/* Header */}
-      <div style={{ padding:"52px 24px 16px" }}>
+      <div style={{ padding: showNotifBanner ? "16px 24px 16px" : "52px 24px 16px" }}>
         <div style={{ fontSize:11, color:C.muted, letterSpacing:1.2, textTransform:"uppercase", marginBottom:6 }}>{todayDisplay}</div>
         <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center" }}>
           <div>
